@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Only the latest version of server-status is being supported. Older versions won't recieve security updates.
+Use a supported Events Made Easy release with the latest available security fixes. For this fork, report security issues privately to the fork maintainer via GitHub private vulnerability reporting if enabled; otherwise use the upstream contact below for inherited issues. Do not post exploit details in public issues.
 
 ## Reporting a Vulnerability
 

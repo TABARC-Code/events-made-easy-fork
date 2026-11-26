@@ -397,6 +397,17 @@ function eme_explain_events_page_missing() {
     <?php
 }
 
+function eme_extra_include_is_verified( $file, $signatures ) {
+    $filename = basename( $file );
+    if ( ! is_array( $signatures ) || ! isset( $signatures[ $filename ] ) ||
+         ! is_string( $signatures[ $filename ] ) || ! is_file( $file ) ||
+         is_link( $file ) || ! is_readable( $file ) ) {
+        return false;
+    }
+    $hash = hash_file( 'sha256', $file );
+    return is_string( $hash ) && hash_equals( $signatures[ $filename ], $hash );
+}
+
 function eme_check_extra_include_signatures() {
 	if ( ! file_exists( EME_EXTRA_INCLUDE_DIR ) || ! is_dir( EME_EXTRA_INCLUDE_DIR ) ) {
 		return;
@@ -405,7 +416,7 @@ function eme_check_extra_include_signatures() {
 	$failed = [];
 	foreach ( glob( EME_EXTRA_INCLUDE_DIR . '/eme_*.php' ) as $file ) {
 		$filename = basename( $file );
-		if ( ! isset( $signatures[ $filename ] ) || hash_file( 'sha256', $file ) !== $signatures[ $filename ] ) {
+		if ( ! eme_extra_include_is_verified( $file, $signatures ) ) {
 			$failed[] = $filename;
 		}
 	}
@@ -422,7 +433,7 @@ if (file_exists(EME_EXTRA_INCLUDE_DIR) && is_dir(EME_EXTRA_INCLUDE_DIR)) {
     $add_admin_warning_extra_include_signatures = 0;
 	foreach ( glob( EME_EXTRA_INCLUDE_DIR . '/eme_*.php' ) as $file ) {
 		$filename = basename($file);
-		if (isset($signatures[$filename]) && hash_file('sha256', $file) === $signatures[$filename]) {
+		if ( eme_extra_include_is_verified( $file, $signatures ) ) {
 			require_once($file);
         } else {
             $add_admin_warning_extra_include_signatures = 1;

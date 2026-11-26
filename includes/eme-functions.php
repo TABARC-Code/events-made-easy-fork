@@ -3603,9 +3603,20 @@ function eme_delete_uploaded_files( $id, $type = 'bookings' ) {
     }
 }
 function eme_delete_uploaded_file( $file, $id, $type = 'bookings' ) {
-    $dir = EME_UPLOAD_DIR . '/' . $type . '/' . $id;
-    if ( is_dir( $dir ) ) {
-        wp_delete_file( "$dir/$file" );
+    if ( ! in_array( $type, [ 'bookings', 'people', 'members' ], true ) ||
+         ! is_string( $file ) || $file !== basename( $file ) ||
+         strpos( $file, '\\' ) !== false || $file === '.' || $file === '..' ||
+         ! filter_var( $id, FILTER_VALIDATE_INT, [ 'options' => [ 'min_range' => 1 ] ] ) ) {
+        return;
+    }
+    $root = realpath( EME_UPLOAD_DIR );
+    $dir = realpath( EME_UPLOAD_DIR . '/' . $type . '/' . $id );
+    if ( $root === false || $dir !== $root . DIRECTORY_SEPARATOR . $type . DIRECTORY_SEPARATOR . $id ) {
+        return;
+    }
+    $path = $dir . DIRECTORY_SEPARATOR . $file;
+    if ( is_file( $path ) && ! is_link( $path ) ) {
+        wp_delete_file( $path );
     }
 }
 
@@ -4665,7 +4676,12 @@ function eme_regenerate_extra_include_signatures() {
     $signatures = [];
     if ( file_exists( EME_EXTRA_INCLUDE_DIR ) && is_dir( EME_EXTRA_INCLUDE_DIR ) ) {
         foreach ( glob( EME_EXTRA_INCLUDE_DIR . '/eme_*.php' ) as $file ) {
-            $signatures[ basename( $file ) ] = hash_file( 'sha256', $file );
+            if ( is_file( $file ) && ! is_link( $file ) && is_readable( $file ) ) {
+                $hash = hash_file( 'sha256', $file );
+                if ( is_string( $hash ) ) {
+                    $signatures[ basename( $file ) ] = $hash;
+                }
+            }
         }
     }
     update_option( 'eme_extra_include_signatures', $signatures );

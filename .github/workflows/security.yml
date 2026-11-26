@@ -1,0 +1,22 @@
+name: Security checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  php-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: PHP syntax checks
+        run: |
+          php --version
+          find . -type f -name '*.php' -not -path './.git/*' -print0 | xargs -0 -r -n 1 php -l
+      - name: Reject web access to CLI mail script
+        run: bash tests/security-cli.sh
