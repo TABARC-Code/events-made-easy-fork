@@ -681,6 +681,25 @@ function eme_payment_gateway_extra_charge( $price, $gateway ) {
     return $result;
 }
 
+// Gateway totals use the provider's own units.
+function eme_payment_amount_is_sufficient( $received, $expected ) {
+    if ( ! is_numeric( $received ) || ! is_numeric( $expected ) ) {
+        return false;
+    }
+    $received = (float) $received;
+    $expected = (float) $expected;
+    return is_finite( $received ) && is_finite( $expected ) &&
+        $received >= 0 && $expected >= 0 &&
+        $received >= $expected - 0.0000001;
+}
+
+function eme_payment_currency_matches( $received, $expected ) {
+    return is_string( $received ) && is_string( $expected ) &&
+        preg_match( '/^[A-Z]{3}$/iD', $received ) &&
+        preg_match( '/^[A-Z]{3}$/iD', $expected ) &&
+        strcasecmp( $received, $expected ) === 0;
+}
+
 function eme_payment_charge_guard( $payment, $gateway ) {
     if ( empty( eme_payment_allowed_to_pay( $payment, $gateway ) ) ) {
         // empty means all is ok, ready to receive payment
@@ -1508,8 +1527,9 @@ function eme_complete_transaction_instamojo( $payment ) {
         if ( $response['payment']['status'] == 'Credit' ) {
             $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment['id'] ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
             $amount_paid = floatval( $response['payment']['amount'] );
-            if ( $amount_paid < $expected_price - 0.01 ) {
+            if ( ! eme_payment_amount_is_sufficient( $amount_paid, $expected_price ) ) {
                 error_log( "EME instamojo completion price mismatch for payment {$payment['id']}: paid $amount_paid, expected $expected_price" );
+                return false;
             }
             eme_mark_payment_paid( $payment['id'], 1, $gateway, $instamojo_requestid );
             return true;
@@ -1535,9 +1555,14 @@ function eme_complete_transaction_sumup( $payment ) {
     }
     if ( $checkout->status == 'PAID' ) {
             $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment['id'] ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
+            if ( ! eme_payment_currency_matches( $checkout->currency ?? null, ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ) ) ) {
+                error_log( 'EME complete_transaction_sumup currency mismatch' );
+                return false;
+            }
             $amount_paid = floatval( $checkout->amount );
-            if ( $amount_paid < $expected_price - 0.01 ) {
+            if ( ! eme_payment_amount_is_sufficient( $amount_paid, $expected_price ) ) {
                 error_log( "EME sumup completion price mismatch for payment {$payment['id']}: paid $amount_paid, expected $expected_price" );
+                return false;
             }
             eme_mark_payment_paid( $payment['id'], 1, $gateway, $checkout_id );
             return true;
@@ -1564,9 +1589,14 @@ function eme_complete_transaction_stripe( $payment ) {
         }
         if ( $stripe_pi->status == 'succeeded' ) {
             $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
+            if ( ! eme_payment_currency_matches( $stripe_session->currency ?? null, ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ) ) ) {
+                error_log( 'EME complete_transaction_stripe currency mismatch' );
+                return false;
+            }
             $amount_paid = $stripe_session->amount_total;
-            if ( $amount_paid < $expected_price - 1 ) {
+            if ( ! eme_payment_amount_is_sufficient( $amount_paid, $expected_price ) ) {
                 error_log( "EME stripe completion price mismatch for payment $payment_id: paid $amount_paid, expected $expected_price" );
+                return false;
             }
             // we store the payment intent id, so we can refund later
             eme_mark_payment_paid( $payment_id, 1, $gateway, $stripe_pi_id );
@@ -1588,9 +1618,14 @@ function eme_complete_transaction_paypal($payment) {
         if ( $response['status'] === 'COMPLETED' ) {
             $capture_id = $response['purchase_units'][0]['payments']['captures'][0]['id'] ?? $paypal_orderid;
             $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment['id'] ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), 'paypal' );
+            if ( ! eme_payment_currency_matches( $response['purchase_units'][0]['payments']['captures'][0]['amount']['currency_code'] ?? null, ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ) ) ) {
+                error_log( 'EME complete_transaction_paypal currency mismatch' );
+                return false;
+            }
             $amount_paid = floatval( $response['purchase_units'][0]['payments']['captures'][0]['amount']['value'] );
-            if ( $amount_paid < $expected_price - 0.01 ) {
+            if ( ! eme_payment_amount_is_sufficient( $amount_paid, $expected_price ) ) {
                 error_log( "EME paypal completion price mismatch for payment {$payment['id']}: paid $amount_paid, expected $expected_price" );
+                return false;
             }
             eme_mark_payment_paid( $payment['id'], 1, 'paypal', $capture_id );
             return true;
@@ -1674,8 +1709,9 @@ function eme_complete_transaction_fondy( $payment ) {
     if ( $order['order_status'] == 'approved' ) {
         $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment['id'] ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
         $amount_paid = $order['amount'];
-        if ( $amount_paid < $expected_price - 1 ) {
+        if ( ! eme_payment_amount_is_sufficient( $amount_paid, $expected_price ) ) {
             error_log( "EME fondy completion price mismatch for payment {$payment['id']}: paid $amount_paid, expected $expected_price" );
+            return false;
         }
         eme_mark_payment_paid( $payment['id'], 1, $gateway, $order_id );
         return true;
@@ -1713,8 +1749,9 @@ function eme_notification_instamojo() {
         if ( $data['status'] == 'Credit' ) {
             $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment['id'] ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
             $instamojo_amount = floatval( $data['amount'] );
-            if ( $instamojo_amount < $expected_price - 0.01 ) {
+            if ( ! eme_payment_amount_is_sufficient( $instamojo_amount, $expected_price ) ) {
                 error_log( "EME instamojo notification price mismatch for payment {$payment['id']}: paid $instamojo_amount, expected $expected_price" );
+                return;
             }
             eme_mark_payment_paid( $payment['id'], 1, $gateway, $instamojo_requestid );
         }
@@ -1869,9 +1906,16 @@ function eme_notification_legacypaypal() {
         }
         // Verify amount meets expectation
         $expected_price  = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
+        if ( ! eme_payment_currency_matches( $ipn->ipn['mc_currency'] ?? null, ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ) ) ) {
+            error_log( 'EME notification_legacypaypal currency mismatch' );
+            $ipn->complete();
+            return;
+        }
         $received_amount = floatval( $ipn->ipn['mc_gross'] );
-        if ( $received_amount < $expected_price - 0.01 ) {
+        if ( ! eme_payment_amount_is_sufficient( $received_amount, $expected_price ) ) {
             error_log( "EME paypal notification price mismatch for payment $payment_id: paid $received_amount, expected $expected_price" );
+            $ipn->complete();
+            return;
         }
         eme_mark_payment_paid( $payment_id, 1, $gateway, $ipn->ipn['txn_id'] );
         $ipn->complete();
@@ -1894,8 +1938,9 @@ function eme_notification_webmoney() {
         $payment = eme_get_payment( $payment_id );
         $cur = ( is_array( $payment ) && ! empty( $payment['currency'] ) ) ? $payment['currency'] : get_option( 'eme_default_currency' );
         $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
-        if ( $amount < $expected_price - 0.01 ) {
+        if ( ! eme_payment_amount_is_sufficient( $amount, $expected_price ) ) {
             error_log( "EME webmoney notification price mismatch for payment $payment_id: paid $amount, expected $expected_price" );
+            return;
         }
         if ( $wm_notif->CheckMD5( $webmoney_purse, $amount, $payment_id, $webmoney_secret ) == WM_RES_OK ) {
             eme_mark_payment_paid( $payment_id, 1, $gateway, $wm_notif->sys_invs_no );
@@ -1963,8 +2008,9 @@ function eme_notification_fdgg() {
     }
 
     $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment['id'] ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
-    if ( $charge_total < $expected_price - 0.01 ) {
+    if ( ! eme_payment_amount_is_sufficient( $charge_total, $expected_price ) ) {
         error_log( "EME fdgg notification price mismatch for payment $payment_id: paid $charge_total, expected $expected_price" );
+        return;
     }
 
     if ( strtolower( $response_status ) == 'approved' ) {
@@ -2006,9 +2052,14 @@ function eme_notification_sumup() {
         $payment = eme_get_payment_by_pg_pid( $checkout_id );
         if ( ! empty( $payment ) ) {
             $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment['id'] ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
+            if ( ! eme_payment_currency_matches( $checkout->currency ?? null, ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ) ) ) {
+                error_log( 'EME notification_sumup currency mismatch' );
+                return;
+            }
             $amount_paid = floatval( $checkout->amount );
-            if ( $amount_paid < $expected_price - 0.01 ) {
+            if ( ! eme_payment_amount_is_sufficient( $amount_paid, $expected_price ) ) {
                 error_log( "EME sumup notification price mismatch for payment {$payment['id']}: paid $amount_paid, expected $expected_price" );
+                return;
             }
             eme_mark_payment_paid( $payment['id'], 1, $gateway, $checkout_id );
         }
@@ -2022,6 +2073,11 @@ function eme_notification_stripe() {
 
     require_once EME_PLUGIN_DIR . 'payment_gateways/stripe/vendor/autoload.php';
     \Stripe\Stripe::setApiKey( "$eme_stripe_private_key" );
+
+    if ( empty( $webhook_secret ) || ( $_SERVER['REQUEST_METHOD'] ?? '' ) !== 'POST' ) {
+        http_response_code( 403 );
+        return;
+    }
 
     $payload    = @file_get_contents( 'php://input' );
     $sig_header = $_SERVER['HTTP_STRIPE_SIGNATURE'] ?? '';
@@ -2052,7 +2108,7 @@ function eme_notification_stripe() {
     $stripe_session = $event->data->object;
     // for asynchronous payment methods, checkout.session.completed arrives with payment_status "unpaid"
     // the payment is only settled once checkout.session.async_payment_succeeded is received
-    if ( $event->type == 'checkout.session.completed' && $stripe_session->payment_status != 'paid' ) {
+    if ( $stripe_session->payment_status !== 'paid' ) {
         http_response_code( 200 );
         return;
     }
@@ -2064,9 +2120,14 @@ function eme_notification_stripe() {
         return;
     }
     $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
+    if ( ! eme_payment_currency_matches( $stripe_session->currency ?? null, ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ) ) ) {
+        error_log( 'EME notification_stripe currency mismatch' );
+        return;
+    }
     $amount_paid    = $stripe_session->amount_total;
-    if ( $amount_paid < $expected_price - 1 ) {
+    if ( ! eme_payment_amount_is_sufficient( $amount_paid, $expected_price ) ) {
         error_log( "EME stripe notification price mismatch for payment $payment_id: paid $amount_paid, expected $expected_price" );
+        return;
     }
     eme_mark_payment_paid( $payment_id, 1, $gateway, $stripe_pi_id );
     http_response_code( 200 );
@@ -2095,8 +2156,9 @@ function eme_notification_fondy() {
             if ( $payment ) {
                 $fondy_amount = $result->getData()['amount'];
                 $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment['id'] ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
-                if ( $fondy_amount < $expected_price - 1 ) {
+                if ( ! eme_payment_amount_is_sufficient( $fondy_amount, $expected_price ) ) {
                     error_log( "EME fondy notification price mismatch for payment {$payment['id']}: paid $fondy_amount, expected $expected_price" );
+                    return;
                 }
                 eme_mark_payment_paid( $payment['id'], 1, $gateway, $order_id );
             }
@@ -2207,15 +2269,18 @@ function eme_charge_paypal() {
     $success_link = eme_payment_return_url($payment, $gateway);
     $cancel_link = eme_payment_url($payment);
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
+    // Recalculate from the current booking, never from the submitted currency.
     $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2258,15 +2323,18 @@ function eme_charge_legacypaypal() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
-    $expected_cur   = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    // Recalculate from the current booking, never from the submitted currency.
+    $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2338,15 +2406,18 @@ function eme_charge_webmoney() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
-    $expected_cur   = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    // Recalculate from the current booking, never from the submitted currency.
+    $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2395,15 +2466,18 @@ function eme_charge_worldpay() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
-    $expected_cur   = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    // Recalculate from the current booking, never from the submitted currency.
+    $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2469,15 +2543,18 @@ function eme_charge_opayo() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
-    $expected_cur   = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    // Recalculate from the current booking, never from the submitted currency.
+    $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2574,15 +2651,18 @@ function eme_charge_fdgg() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
-    $expected_cur   = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    // Recalculate from the current booking, never from the submitted currency.
+    $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2646,15 +2726,18 @@ function eme_charge_stripe() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
+    // Recalculate from the current booking, never from the submitted currency.
     $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2735,15 +2818,18 @@ function eme_charge_braintree() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
+    // Recalculate from the current booking, never from the submitted currency.
     $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2804,15 +2890,18 @@ function eme_charge_instamojo() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
+    // Recalculate from the current booking, never from the submitted currency.
     $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -2926,15 +3015,18 @@ function eme_charge_fondy() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
+    // Recalculate from the current booking, never from the submitted currency.
     $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -3190,15 +3282,18 @@ function eme_charge_mollie() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
+    // Recalculate from the current booking, never from the submitted currency.
     $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -3295,9 +3390,14 @@ function eme_notification_mollie( $mollie_payment_id = 0 ) {
     // The payment is paid and isn't refunded or charged back
     if ( $mollie_payment->isPaid() && ! $mollie_payment->hasRefunds() && ! $mollie_payment->hasChargebacks() ) {
         $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), $gateway );
+        if ( ! eme_payment_currency_matches( $mollie_payment->amount->currency ?? null, ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ) ) ) {
+            error_log( 'EME notification_mollie currency mismatch' );
+            return false;
+        }
         $amount_paid = floatval( $mollie_payment->amount->value );
-        if ( $amount_paid < $expected_price - 0.01 ) {
+        if ( ! eme_payment_amount_is_sufficient( $amount_paid, $expected_price ) ) {
             error_log( "EME mollie completion price mismatch for payment $payment_id: paid $amount_paid, expected $expected_price" );
+            return false;
         }
         eme_mark_payment_paid( $payment_id, 1, $gateway, $mollie_payment_id );
         return true;
@@ -3335,15 +3435,18 @@ function eme_charge_bancontactwero() {
         exit;
     }
 
-    // Log mismatches between POST and DB values
-    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, $gateway );
+    // Recalculate from the current booking, never from the submitted currency.
     $expected_cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
-    if ( abs( $expected_price - $price ) > 0.01 ) {
-        error_log( "EME $gateway price mismatch for payment $payment_id: POST price $price, DB price $expected_price" );
+    $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $expected_cur, $gateway );
+    if ( empty( $payment ) || ! eme_payment_currency_matches( $cur, $expected_cur ) ||
+         ! eme_payment_amount_is_sufficient( $price, $expected_price ) ||
+         ! eme_payment_amount_is_sufficient( $expected_price, $price ) ) {
+        error_log( "EME $gateway rejected stale or invalid charge for payment $payment_id" );
+        wp_safe_redirect( eme_payment_return_url( $payment, 1 ) ?: eme_get_events_page() );
+        exit;
     }
-    if ( $expected_cur !== $cur ) {
-        error_log( "EME $gateway currency mismatch for payment $payment_id: POST cur $cur, DB cur $expected_cur" );
-    }
+    $price = $expected_price;
+    $cur = $expected_cur;
 
     // check if payment is still possible via this gateway
     eme_payment_charge_guard( $payment, $gateway );
@@ -3565,10 +3668,11 @@ function eme_notification_worldpay() {
         return;
     }
     $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' ), 'worldpay' );
-    if ( $amount < $expected_price - 0.01 ) {
+    if ( ! eme_payment_amount_is_sufficient( $amount, $expected_price ) ) {
         error_log( "EME worldpay notification price mismatch for payment $payment_id: paid $amount, expected $expected_price" );
+        return;
     }
-    if ( $post_pwd == $worldpay_pwd && $trans_status == 'Y' && $test_mode == 0 && $post_instid == $worldpay_instid ) {
+    if ( is_string( $worldpay_pwd ) && $worldpay_pwd !== '' && is_string( $post_pwd ) && hash_equals( $worldpay_pwd, $post_pwd ) && $trans_status == 'Y' && $test_mode == 0 && $post_instid == $worldpay_instid ) {
         eme_mark_payment_paid( $payment_id, 1, 'worldpay', $trans_id );
     }
 }
@@ -3599,8 +3703,9 @@ function eme_notification_opayo() {
             }
             $cur = ! empty( $payment['currency'] ) ? $payment['currency'] : get_option( 'eme_default_currency' );
             $expected_price = eme_payment_gateway_total( eme_get_payment_price( $payment_id ), $cur, 'opayo' );
-            if ( $amount < $expected_price - 0.01 ) {
+            if ( ! eme_payment_amount_is_sufficient( $amount, $expected_price ) ) {
                 error_log( "EME opayo notification price mismatch for payment $payment_id: paid $amount, expected $expected_price" );
+                return;
             }
             eme_mark_payment_paid( $payment_id, 1, 'opayo', $decryptArr['VPSTxId'] );
         }
@@ -4162,29 +4267,39 @@ function eme_update_payment_pg_handled( $payment_id ) {
     wp_cache_delete( "eme_payment ".$payment_id );
 }
 
+// Claim the observed state in one database write, rather than a read followed by an unconditional update.
+function eme_claim_payment_notification( $payment, $pg_pid ) {
+    global $wpdb;
+    if ( ! is_scalar( $pg_pid ) || (string) $pg_pid === '' ||
+         ! isset( $payment['id'], $payment['pg_pid'], $payment['pg_handled'] ) ) {
+        return false;
+    }
+    $pg_pid = (string) $pg_pid;
+    if ( (int) $payment['pg_handled'] === 1 && (string) $payment['pg_pid'] === $pg_pid ) {
+        return false;
+    }
+    $changed = $wpdb->update(
+        EME_DB_PREFIX . EME_PAYMENTS_TBNAME,
+        [ 'pg_pid' => $pg_pid, 'pg_handled' => 1 ],
+        [ 'id' => $payment['id'], 'pg_pid' => $payment['pg_pid'], 'pg_handled' => $payment['pg_handled'] ],
+        [ '%s', '%d' ],
+        [ '%d', '%s', '%d' ]
+    );
+    wp_cache_delete( "eme_payment " . $payment['id'] );
+    return $changed === 1;
+}
+
 function eme_mark_payment_paid( $payment_id, $is_ipn = 1, $pg = '', $pg_pid = '' ) {
     $payment = eme_get_payment( $payment_id );
-    // let's now store the payment gateway id, so we can see if it has been handled already
-    // This may overwrite the pg_pid set here by some gateways (like mollie, paypal) but at this point those are no longer needed anyway
-    if ( $payment['pg_pid'] != $pg_pid ) {
-        eme_update_payment_pg_pid( $payment_id, $pg_pid );
-        // payment changed, let's get it again
-        $payment = eme_get_payment( $payment_id );
-        // to be sure to avoid any kind of caching: we again set the pg_handled=0, but should not be needed
-        $payment['pg_handled'] = 0;
+    if ( empty( $payment ) ) {
+        return;
     }
-
-    if ($is_ipn) {
-        // in case of payment via payment gateway, don't allow to be paid twice for the same pg_pid
-        if ( $payment['pg_handled'] == 1 ) {
+    if ( $is_ipn ) {
+        if ( ! eme_claim_payment_notification( $payment, $pg_pid ) ) {
             return;
         }
-
-        // ok, it hasn't been paid for yet, so mark that we handled it
-        // we do this as soon as possible, so other payments arriving won't trigger another payment
-        eme_update_payment_pg_handled( $payment_id );
-        // log it, so we have a trace
-        //error_log("Handling $pg payment notification for id $payment_id");
+    } elseif ( $payment['pg_pid'] != $pg_pid ) {
+        eme_update_payment_pg_pid( $payment_id, $pg_pid );
     }
 
     if ( $payment['target'] == 'member' ) {
