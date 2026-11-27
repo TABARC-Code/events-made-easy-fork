@@ -1277,6 +1277,65 @@ function eme_cancel_bookings_ajax() {
     wp_die();
 }
 
+// booking_seats is a signed MEDIUMINT in the database.
+function eme_booking_quantity_valid( $value ) {
+    return ( is_int( $value ) || is_string( $value ) ) &&
+        filter_var( $value, FILTER_VALIDATE_INT, [ 'options' => [ 'min_range' => 0, 'max_range' => 8388607 ] ] ) !== false;
+}
+
+function eme_booking_post_quantities_valid( $fields, $category_count, $seatmap = false ) {
+    if ( ! is_array( $fields ) ) {
+        return false;
+    }
+    $total = 0;
+    foreach ( $fields as $key => $value ) {
+        if ( ! is_string( $key ) || strpos( $key, 'bookedSeats' ) === false ) {
+            continue;
+        }
+        if ( $seatmap ) {
+            // Seat map counts are derived from selected seats, not posted quantities.
+            continue;
+        }
+        if ( $category_count > 0 ) {
+            if ( ! preg_match( '/^bookedSeats([1-9][0-9]*)$/D', $key, $matches ) ||
+                 (int) $matches[1] > $category_count ) {
+                return false;
+            }
+        } elseif ( $key !== 'bookedSeats' ) {
+            return false;
+        }
+        if ( ! eme_booking_quantity_valid( $value ) ) {
+            return false;
+        }
+        $total += (int) $value;
+        if ( $total > 8388607 ) {
+            return false;
+        }
+    }
+    return true;
+}
+
+function eme_booking_categories_within_limit( $counts, $limits, $minimum = false ) {
+    if ( ! is_array( $counts ) || ! is_array( $limits ) ) {
+        return false;
+    }
+    foreach ( $counts as $key => $count ) {
+        if ( ! eme_booking_quantity_valid( $count ) || ! array_key_exists( $key, $limits ) ||
+             ! eme_booking_quantity_valid( $limits[$key] ) ) {
+            return false;
+        }
+        if ( $minimum ? (int) $count < (int) $limits[$key] : (int) $count > (int) $limits[$key] ) {
+            return false;
+        }
+    }
+    foreach ( $limits as $key => $limit ) {
+        if ( ! array_key_exists( $key, $counts ) && $minimum && (int) $limit > 0 ) {
+            return false;
+        }
+    }
+    return true;
+}
+
 function eme_multibook_seats( $events, $send_mail, $format, $is_multibooking = 1, $simple = 0 ) {
     $eme_is_admin_request = eme_is_admin_request();
     $booking_ids          = [];
@@ -1319,6 +1378,12 @@ function eme_multibook_seats( $events, $send_mail, $format, $is_multibooking = 1
         // an event without matching booking? Skip it
         // can happen for multibookings where some events are already in the past (because for those the booking form no longer shows)
         if ( $is_multibooking && ! $event['event_properties']['take_attendance'] && ! isset( $_POST['bookings'][ $event_id ] ) ) {
+            continue;
+        }
+
+        $category_count = eme_is_multi( $event['price'] ) ? count( eme_convert_multi2array( $event['price'] ) ) : 0;
+        if ( ! eme_booking_post_quantities_valid( $_POST['bookings'][$event_id] ?? [], $category_count, eme_seatlayout_event_uses_seatmap( $event ) ) ) {
+            $form_html .= __( 'Please enter a correct number of seats to reserve', 'events-made-easy' );
             continue;
         }
 
@@ -1614,12 +1679,12 @@ function eme_multibook_seats( $events, $send_mail, $format, $is_multibooking = 1
 
         if ( ! eme_is_multi( $min_allowed ) && $bookedSeats < $min_allowed ) {
             $form_html .= __( 'Please enter a correct number of seats to reserve', 'events-made-easy' );
-        } elseif ( eme_is_multi( $min_allowed ) && eme_is_multi( $event['event_seats'] ) && $bookedSeats_mp < eme_convert_multi2array( $min_allowed ) ) {
+        } elseif ( eme_is_multi( $min_allowed ) && eme_is_multi( $event['event_seats'] ) && ! eme_booking_categories_within_limit( $bookedSeats_mp, eme_convert_multi2array( $min_allowed ), true ) ) {
             $form_html .= __( 'Please enter a correct number of seats to reserve', 'events-made-easy' );
         } elseif ( ! eme_is_multi( $max_allowed ) && $max_allowed > 0 && $bookedSeats > $max_allowed ) {
             // we check the max, but only is max_allowed>0, max_allowed=0 means no limit
             $form_html .= __( 'Please enter a correct number of seats to reserve', 'events-made-easy' );
-        } elseif ( eme_is_multi( $max_allowed ) && eme_is_multi( $event['event_seats'] ) && eme_get_total( $max_allowed ) > 0 && $bookedSeats_mp > eme_convert_multi2array( $max_allowed ) ) {
+        } elseif ( eme_is_multi( $max_allowed ) && eme_is_multi( $event['event_seats'] ) && eme_get_total( $max_allowed ) > 0 && ! eme_booking_categories_within_limit( $bookedSeats_mp, eme_convert_multi2array( $max_allowed ) ) ) {
             // we check the max, but only is the total max_allowed>0, max_allowed=0 means no limit
             // currently we don't support 0 as being no limit per array element
             $form_html .= __( 'Please enter a correct number of seats to reserve', 'events-made-easy' );
@@ -1674,9 +1739,7 @@ function eme_multibook_seats( $events, $send_mail, $format, $is_multibooking = 1
                 if ($event['location_id'] != $t2_info['location_id']) {
                     continue;
                 }
-                if (($event['event_start']>=$t2_info['start'] && $event['event_start']<=$t2_info['end']) ||
-                    ($event['event_end']>=$t2_info['start'] && $event['event_end']<=$t2_info['end'])
-                ) {
+                if ( $event['event_start'] <= $t2_info['end'] && $event['event_end'] >= $t2_info['start'] ) {
                     $booked_cap += $t2_info['bookedSeats'];
                 }
             }
@@ -1739,6 +1802,8 @@ function eme_multibook_seats( $events, $send_mail, $format, $is_multibooking = 1
                         do_action( 'eme_insert_rsvp_action', $booking );
                     }
                 }
+            } else {
+                $form_html .= __( 'Booking could not be saved. Please check availability and try again.', 'events-made-easy' ) . '<br>';
             }
         } else {
             $form_html .= $res[1];
@@ -2134,7 +2199,51 @@ function eme_db_insert_booking( $event, $booker, $booking ) {
     $booking['creation_date'] = current_time( 'mysql', false );
     $booking['modif_date'] = $booking['creation_date'];
 
-    $do_insert = function () use ( $wpdb, $bookings_table, $event, &$booking, $seat_ids ) {
+    $do_insert = function () use ( $wpdb, $bookings_table, $event, &$booking, $seat_ids, $booker, $eme_is_admin_request ) {
+        $event_id = $event['event_id'];
+        if ( ! eme_booking_quantity_valid( $booking['booking_seats'] ) ) {
+            return false;
+        }
+        $counts = eme_convert_multi2array( $booking['booking_seats_mp'] );
+        if ( ! empty( $counts ) ) {
+            foreach ( $counts as $count ) {
+                if ( ! eme_booking_quantity_valid( $count ) ) {
+                    return false;
+                }
+            }
+            if ( array_sum( $counts ) != $booking['booking_seats'] ) {
+                return false;
+            }
+        }
+        // Recheck capacity and duplicate rules inside the shared event lock.
+        $allow_overbooking = $eme_is_admin_request && get_option( 'eme_rsvp_admin_allow_overbooking' ) &&
+            eme_user_can_book_for_others( $event );
+        wp_cache_delete( "eme_event_cap " . $event_id );
+        if ( ! $allow_overbooking ) {
+            if ( eme_get_total( $event['event_seats'] ) > 0 &&
+                 ! ( eme_is_multi( $event['event_seats'] ) ?
+                     eme_are_multiseats_available_for( $event_id, $counts ) :
+                     eme_are_seats_available_for( $event_id, $booking['booking_seats'] ) ) ) {
+                return false;
+            }
+            if ( ! empty( $event['location_id'] ) ) {
+                $location = eme_get_location( $event['location_id'] );
+                if ( ! empty( $location['location_properties']['max_capacity'] ) &&
+                     ! eme_booking_location_has_capacity( $event, $booking['booking_seats'], $location['location_properties']['max_capacity'] ) ) {
+                    return false;
+                }
+            }
+        }
+        if ( ! $eme_is_admin_request ) {
+            if ( ! empty( $event['event_properties']['person_only_once'] ) &&
+                 eme_get_booking_ids_by_person_event_id( $booker['person_id'], $event_id ) ) {
+                return false;
+            }
+            if ( ! empty( $event['event_properties']['email_only_once'] ) && ! empty( $booker['email'] ) &&
+                 eme_get_booking_ids_by_email_event_id( $booker['email'], $event_id ) ) {
+                return false;
+            }
+        }
         // for seatmap bookings: check the seats once more, now we hold the seat lock
         if ( ! empty( $seat_ids ) && ! eme_seatlayout_validate_seat_ids( $event['event_id'], $seat_ids )['valid'] ) {
             return false;
@@ -2152,10 +2261,30 @@ function eme_db_insert_booking( $event, $booker, $booking ) {
         }
         return false;
     };
-    if ( ! empty( $seat_ids ) ) {
+    // Location lock first, then event lock. Negative IDs reserve a separate
+    // namespace from the positive event IDs used by seat maps.
+    $with_event_lock = function () use ( $event, $do_insert ) {
         return eme_seatlayout_with_lock( $event['event_id'], $do_insert );
+    };
+    if ( ! empty( $event['location_id'] ) ) {
+        return eme_seatlayout_with_lock( -abs( (int) $event['location_id'] ), $with_event_lock );
     }
-    return $do_insert();
+    return $with_event_lock();
+}
+
+// Read capacity directly from the database under the location lock, not the
+// short-lived display cache or a public event listing.
+function eme_booking_location_has_capacity( $event, $requested, $capacity ) {
+    global $wpdb;
+    $events = EME_DB_PREFIX . EME_EVENTS_TBNAME;
+    $bookings = EME_DB_PREFIX . EME_BOOKINGS_TBNAME;
+    $sql = $wpdb->prepare(
+        "SELECT COALESCE(SUM(b.booking_seats),0) FROM $bookings b INNER JOIN $events e ON e.event_id=b.event_id WHERE e.location_id=%d AND e.event_status<>%d AND e.event_start<=%s AND e.event_end>=%s AND b.status IN (%d,%d,%d)",
+        $event['location_id'], EME_EVENT_STATUS_TRASH, $event['event_end'], $event['event_start'],
+        EME_RSVP_STATUS_PENDING, EME_RSVP_STATUS_USERPENDING, EME_RSVP_STATUS_APPROVED
+    );
+    $used = $wpdb->get_var( $sql );
+    return is_numeric( $used ) && (int) $used >= 0 && (int) $used + (int) $requested <= (int) $capacity;
 }
 
 // API function so people easily get the booking answers from a post, primarily used for discounts
@@ -3190,6 +3319,9 @@ function eme_are_seats_available( $event ) {
 }
 
 function eme_are_seats_available_for( $event_id, $seats, $exclude_waiting_list = 0, $exclude_pending_booking_id = 0 ) {
+    if ( ! eme_booking_quantity_valid( $seats ) ) {
+        return false;
+    }
     $total_seats = eme_get_total_seats( $event_id );
     if ( $total_seats > 0 ) {
         $available_seats = eme_get_available_seats( $event_id, $exclude_waiting_list, $exclude_pending_booking_id );
@@ -3203,13 +3335,7 @@ function eme_are_seats_available_for( $event_id, $seats, $exclude_waiting_list =
 
 function eme_are_multiseats_available_for( $event_id, $multiseats, $exclude_waiting_list = 0, $exclude_pending_booking_id = 0 ) {
     $available_seats = eme_get_available_multiseats( $event_id, $exclude_waiting_list, $exclude_pending_booking_id );
-    foreach ( $available_seats as $key => $value ) {
-        $remaining_seats = $value - $multiseats[ $key ];
-        if ( $remaining_seats < 0 ) {
-            return 0;
-        }
-    }
-    return 1;
+    return eme_booking_categories_within_limit( $multiseats, $available_seats );
 }
 
 function eme_get_bookingids_for( $event_id ) {

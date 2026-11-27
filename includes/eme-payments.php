@@ -4271,7 +4271,7 @@ function eme_update_payment_pg_handled( $payment_id ) {
 function eme_claim_payment_notification( $payment, $pg_pid ) {
     global $wpdb;
     if ( ! is_scalar( $pg_pid ) || (string) $pg_pid === '' ||
-         ! isset( $payment['id'], $payment['pg_pid'], $payment['pg_handled'] ) ) {
+         ! isset( $payment['id'], $payment['pg_handled'] ) || ! array_key_exists( 'pg_pid', $payment ) ) {
         return false;
     }
     $pg_pid = (string) $pg_pid;

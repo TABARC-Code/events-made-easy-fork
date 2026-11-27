@@ -23,3 +23,6 @@ jobs:
 
       - name: Payment regression checks
         run: php tests/security-payments.php
+
+      - name: Booking regression checks
+        run: php tests/security-bookings.php

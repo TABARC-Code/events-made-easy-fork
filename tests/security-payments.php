@@ -38,3 +38,6 @@ check(!eme_claim_payment_notification($snapshot, 'transaction'), 'Concurrent sta
 check(!eme_claim_payment_notification($wpdb->row, 'transaction'), 'Repeated notification');
 check(!eme_claim_payment_notification($wpdb->row, ''), 'Missing transaction identifier');
 echo "Payment regression checks passed.\n";
+
+$wpdb->row = ['id' => 2, 'pg_pid' => null, 'pg_handled' => 0];
+check(eme_claim_payment_notification($wpdb->row, 'first-transaction'), 'New payment with nullable gateway ID');
