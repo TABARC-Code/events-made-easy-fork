@@ -2,3 +2,14 @@ dist
 langs/pot_gen
 composer.lock
 .php-cs-fixer.dist.php
+
+**/chat-exports/
+**/chat_exports/
+**/chat-transcripts/
+**/conversation-exports/
+**/conversation-logs/
+**/.claude/projects/
+**/.claude/debug/
+**/.claude/session-env/
+**/.claude/history.jsonl
+**/.claude/settings.local.json
