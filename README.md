@@ -6,7 +6,7 @@
 
 [![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](https://www.gnu.org/licenses/gpl-2.0)
 [![WordPress](https://img.shields.io/badge/WordPress-6.0%2B-21759B?logo=wordpress&logoColor=white)](https://wordpress.org/)
-[![PHP](https://img.shields.io/badge/PHP-8.1%2B-777BB4?logo=php&logoColor=white)](https://www.php.net/)
+[![PHP](https://img.shields.io/badge/PHP-8.2%2B-777BB4?logo=php&logoColor=white)](https://www.php.net/)
 [![ClassicPress](https://img.shields.io/badge/ClassicPress-compatible-057f99)](https://www.classicpress.net/)
 
 [Documentation](https://www.e-dynamics.be/wordpress/eme-docs/) &middot; [Report Issue](https://github.com/liedekef/events-made-easy/issues) &middot; [Sponsor](https://github.com/sponsors/liedekef)

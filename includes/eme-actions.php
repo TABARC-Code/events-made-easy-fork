@@ -7,7 +7,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 // the early init runs before theme functions.php is loaded, so we only call things that don't call custom filters
 function eme_actions_early_init() {
     $eme_is_admin_request = eme_is_admin_request();
-    if ( !empty( $_GET['eme_captcha'] ) && $_GET['eme_captcha'] == 'generate' && !empty( $_GET['f'] ) ) {
+    if ( isset( $_GET['eme_captcha'] ) && $_GET['eme_captcha'] === 'generate' ) {
+        if ( ! isset( $_GET['f'], $_GET['ts'], $_GET['eme_ctoken'] ) ||
+             ! is_string( $_GET['f'] ) || ! is_string( $_GET['ts'] ) || ! is_string( $_GET['eme_ctoken'] ) ) {
+            status_header( 400 );
+            exit;
+        }
         $captcha_id = eme_sanitize_filenamechars( $_GET['f'] );
         $ts         = intval( $_GET['ts'] ?? 0 );
         $token      = sanitize_text_field( wp_unslash( $_GET['eme_ctoken'] ?? '' ) );
@@ -33,6 +38,10 @@ function eme_actions_early_init() {
         exit;
     }
     if ( !empty( $_GET['eme_tracker_id'] ) ) {
+        if ( ! is_string( $_GET['eme_tracker_id'] ) ) {
+            status_header( 400 );
+            exit;
+        }
         $tracker_id = eme_sanitize_filenamechars( $_GET['eme_tracker_id'] );
         if ( ! eme_is_empty_string( $tracker_id ) ) {
             eme_mail_track( $tracker_id );
@@ -41,7 +50,11 @@ function eme_actions_early_init() {
     }
 
     if ( get_query_var( 'eme_rsvp_proof' ) && !empty( $_GET['bid'] ) && !empty( $_GET['eme_hash'] ) ) {
-        $booking_id = intval( $_GET['bid'] );
+        $booking_id = filter_var( $_GET['bid'], FILTER_VALIDATE_INT, [ 'options' => [ 'min_range' => 1 ] ] );
+        if ( ! $booking_id || ! is_string( $_GET['eme_hash'] ) ) {
+            status_header( 400 );
+            exit;
+        }
         $get_rsvp_proof_hash = eme_sanitize_request( $_GET['eme_hash'] );
         $calc_rsvp_proof_hash = wp_hash( $booking_id . '|' . 'rsvp_proof' , 'nonce' );
         if ( hash_equals( $calc_rsvp_proof_hash, $get_rsvp_proof_hash ) ) {
@@ -77,15 +90,17 @@ function eme_actions_early_init() {
             // this is the case for new registrations in the backend
             $event_id = intval( $_POST['event_id'] );
             $event    = eme_get_event( $event_id );
-            if ( !empty( $event )) 
+            if ( eme_user_can_book_for_others( $event ) ) {
                 eme_ajax_people_autocomplete( $no_wp_die, $event['registration_wp_users_only'] );
+            }
         } elseif ( isset( $_POST['booking_id'] ) && $eme_is_admin_request ) {
             check_ajax_referer( 'eme_admin', 'eme_admin_nonce' );
             // this is the case for updating a registration in the backend
             $booking_id = intval( $_POST['booking_id'] );
             $event      = eme_get_event_by_booking_id( $booking_id );
-            if ( !empty( $event )) 
+            if ( eme_user_can_book_for_others( $event ) ) {
                 eme_ajax_people_autocomplete( $no_wp_die, $event['registration_wp_users_only'] );
+            }
         } elseif ( isset( $_POST['membership_id'] ) && is_user_logged_in() ) {
             if ( ( ! isset( $_POST['eme_admin_nonce'] ) && ! isset( $_POST['eme_frontend_nonce'] ) ) ||
                 ( isset( $_POST['eme_admin_nonce'] ) && ! wp_verify_nonce( $_POST['eme_admin_nonce'], 'eme_admin' ) ) ||
@@ -152,7 +167,7 @@ function eme_actions_init() {
                 // accessible from backend and frontend, so we hash_equals wp_verify_nonce
                 $event_id = intval( $_GET['event_id'] ?? 0 );
                 $hash = $_GET['eme_admin_nonce'] ?? '';
-                if ( ! $event_id || ! hash_equals( eme_admin_report_hash( $event_id, 'booking_printable' ), $hash ) ) {
+                if ( ! $event_id || ! is_string( $hash ) || ! hash_equals( eme_admin_report_hash( $event_id, 'booking_printable' ), $hash ) ) {
                     wp_die( esc_html__( 'Access denied!', 'events-made-easy' ) );
                 }
                 if ( current_user_can( get_option( 'eme_cap_list_events' ) ) ) {
@@ -164,7 +179,7 @@ function eme_actions_init() {
                 // accessible from backend and frontend, so we use hash_equals
                 $event_id = intval( $_GET['event_id'] ?? 0 );
                 $hash = $_GET['eme_admin_nonce'] ?? '';
-                if ( ! $event_id || ! hash_equals( eme_admin_report_hash( $event_id, 'booking_csv' ), $hash ) ) {
+                if ( ! $event_id || ! is_string( $hash ) || ! hash_equals( eme_admin_report_hash( $event_id, 'booking_csv' ), $hash ) ) {
                     wp_die( esc_html__( 'Access denied!', 'events-made-easy' ) );
                 }
                 if ( current_user_can( get_option( 'eme_cap_list_events' ) ) ) {
@@ -176,7 +191,7 @@ function eme_actions_init() {
                 // accessible from backend and frontend, so we use hash_equals
                 $event_id = intval( $_GET['event_id'] ?? 0 );
                 $hash = $_GET['eme_admin_nonce'] ?? '';
-                if ( ! $event_id || ! hash_equals( eme_admin_report_hash( $event_id, 'tasksignups_csv' ), $hash ) ) {
+                if ( ! $event_id || ! is_string( $hash ) || ! hash_equals( eme_admin_report_hash( $event_id, 'tasksignups_csv' ), $hash ) ) {
                     wp_die( esc_html__( 'Access denied!', 'events-made-easy' ) );
                 }
                 if ( current_user_can( get_option( 'eme_cap_list_events' ) ) ) {
@@ -672,7 +687,15 @@ function eme_del_upload_ajax() {
     }
 
     if ( isset( $_POST['id'] ) && isset( $_POST['name'] ) && isset( $_POST['type'] ) && isset( $_POST['random_id'] ) && isset( $_POST['field_id'] ) && isset( $_POST['extra_id'] ) ) {
-        $id        = intval( $_POST['id'] );
+        foreach ( [ 'id', 'name', 'type', 'random_id', 'field_id', 'extra_id' ] as $key ) {
+            if ( ! is_string( $_POST[ $key ] ) ) {
+                wp_die( '', '', [ 'response' => 400 ] );
+            }
+        }
+        $id = filter_var( $_POST['id'], FILTER_VALIDATE_INT, [ 'options' => [ 'min_range' => 1 ] ] );
+        if ( ! $id ) {
+            wp_die( '', '', [ 'response' => 400 ] );
+        }
         $type      = eme_sanitize_request( $_POST['type'] );
         $random_id = eme_sanitize_request( $_POST['random_id'] );
         // in case of empty string: don't do an intval (it would result in 0, which is not what we want)
@@ -699,7 +722,11 @@ function eme_del_upload_ajax() {
         }
         $fname = "$random_id-$field_id-$extra_id-$clean.$clean_ext";
 
-        if ( in_array( $type, [ 'bookings', 'people', 'members' ] ) ) {
+        if ( $type === 'people' && current_user_can( get_option( 'eme_cap_edit_people' ) ) ) {
+            eme_delete_uploaded_file( $fname, $id, $type );
+        } elseif ( $type === 'members' && current_user_can( get_option( 'eme_cap_edit_members' ) ) ) {
+            eme_delete_uploaded_file( $fname, $id, $type );
+        } elseif ( $type === 'bookings' && eme_user_can_book_for_others( eme_get_event_by_booking_id( $id ) ) ) {
             eme_delete_uploaded_file( $fname, $id, $type );
         }
     }
@@ -818,7 +845,7 @@ function eme_jodit_preview_render() {
         wp_send_json_error('Unauthorized', 403);
     }
 
-    if (empty($_POST['html'])) {
+    if ( empty( $_POST['html'] ) || ! is_string( $_POST['html'] ) ) {
         wp_send_json_error('No HTML received.');
     }
 
